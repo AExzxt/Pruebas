@@ -1,0 +1,10 @@
+              precision    recall  f1-score   support
+
+        liso     0.9697    0.9715    0.9706      6104
+       grava     0.9368    0.9391    0.9379      2855
+      tierra     0.9973    0.9881    0.9927      2608
+   obstaculo     0.0000    0.0000    0.0000         0
+
+    accuracy                         0.9672     11567
+   macro avg     0.7259    0.7247    0.7253     11567
+weighted avg     0.9678    0.9672    0.9675     11567

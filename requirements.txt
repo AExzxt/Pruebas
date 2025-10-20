@@ -1,0 +1,9 @@
+tensorflow==2.16.1
+opencv-python
+numpy
+scikit-learn
+matplotlib
+pandas
+onnx
+onnxruntime
+tf2onnx

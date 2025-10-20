@@ -1,0 +1,30 @@
+# Entorno virtual
+.venv/
+env/
+
+# Archivos temporales
+__pycache__/
+*.pyc
+*.pyo
+*.log
+
+# Dataset y datos grandes
+dataset/
+data/
+data_yolo_pothole/
+runs/
+YOLOv8/
+
+# Modelos y pesos
+*.pt
+*.pth
+*.onnx
+models/
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+
+# Config local
+.vscode/
+

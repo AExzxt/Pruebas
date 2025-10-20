@@ -1,0 +1,25 @@
+{
+  "class_names": [
+    "liso",
+    "grava",
+    "tierra",
+    "obstaculo"
+  ],
+  "rough_k": 3,
+  "results": {
+    "type": {
+      "val": {
+        "acc": 0.9672343730926514
+      },
+      "test": {
+        "acc": 0.9649869799613953
+      }
+    },
+    "rough": {
+      "val": {
+        "acc": 0.5835103988647461,
+        "k": 3
+      }
+    }
+  }
+}
