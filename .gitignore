@@ -21,6 +21,14 @@ YOLOv8/
 *.onnx
 models/
 
+# Desplegables: permitir subir artefactos necesarios
+!deploy/
+!deploy/**
+
+# Permitir scripts
+!scripts/
+!scripts/**
+
 # Archivos de sistema
 .DS_Store
 Thumbs.db
