@@ -28,7 +28,7 @@ class DualHeadNet(nn.Module):
         elif backbone == "efficientnet_b0":
             m = models.efficientnet_b0(weights=None)
             dim = m.classifier[-1].in_features
-            self.backbone = nn.Sequential(m.features, nn.AdaptiveAvgPool2d(1))
+            self.backbone = nn.Sequential(m.features, nn.m(1))
         else:
             raise ValueError("Backbone no soportado: " + str(backbone))
 
