@@ -4,6 +4,8 @@ import subprocess
 import threading
 import queue
 import tkinter as tk
+from datetime import datetime
+from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
 
 
@@ -12,6 +14,7 @@ DEFAULT_RUNTIME_SCRIPT = "/home/aldrin/Pruebas/scripts/pi_runtime.py"
 DEFAULT_ANALYZE_SCRIPT = "/home/aldrin/Pruebas/scripts/analyze_run.py"
 DEFAULT_MULTITASK = "/home/aldrin/Pruebas/deploy/multitask_two_loaders.pt"
 DEFAULT_YOLO = "/home/aldrin/Pruebas/deploy/yolo_pothole_best.pt"
+DEFAULT_RUNS_BASE = "/home/aldrin/cnn-terreno/pi_runs"
 DEFAULT_RUN_DIR = "/home/aldrin/cnn-terreno/pi_runs/latest_or_timestamp"
 
 
@@ -157,6 +160,28 @@ class PiDashboard(tk.Tk):
         ttk.Button(analyze_inputs, text="Seleccionar carpeta", command=self._select_run_dir).grid(row=0, column=2, padx=5)
         ttk.Button(analyze_frame, text="Analizar carpeta", command=self.run_analysis).pack(anchor="w", pady=5)
 
+        runs_list_frame = ttk.Frame(analyze_frame)
+        runs_list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        ttk.Label(runs_list_frame, text="Últimas grabaciones (haz doble clic o selecciona y pulsa Enter):").pack(anchor="w")
+        columns = ("name", "date", "path")
+        self.run_tree = ttk.Treeview(runs_list_frame, columns=columns, show="headings", height=6)
+        self.run_tree.heading("name", text="Carpeta")
+        self.run_tree.heading("date", text="Fecha (mod)")
+        self.run_tree.heading("path", text="Ruta completa")
+        self.run_tree.column("name", width=150)
+        self.run_tree.column("date", width=180)
+        self.run_tree.column("path", width=450)
+        self.run_tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+        scrollbar = ttk.Scrollbar(runs_list_frame, orient="vertical", command=self.run_tree.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.run_tree.configure(yscrollcommand=scrollbar.set)
+        self.run_tree.bind("<<TreeviewSelect>>", self._select_run_from_list)
+        self.run_tree.bind("<Double-1>", self._apply_run_from_event)
+        self.run_tree.bind("<Return>", self._apply_run_from_event)
+
+        runs_btn_frame = ttk.Frame(analyze_frame)
+        runs_btn_frame.pack(fill=tk.X, pady=5)
+        ttk.Button(runs_btn_frame, text="Actualizar lista", command=self._refresh_runs_list).pack(side=tk.LEFT)
         ttk.Label(analyze_frame, text="Gráfico adicional: 'frame_overview.png' muestra FPS vs terreno y detección de baches (colores=terreno, círculos=sin bache, X=bache).").pack(anchor="w")
 
         # Status + progress
@@ -174,6 +199,7 @@ class PiDashboard(tk.Tk):
         self.console.pack(fill=tk.BOTH, expand=True)
 
         self._update_runtime_preview()
+        self._refresh_runs_list()
 
     def _add_labeled_entry(self, parent, label, var, row, col, colspan=1):
         ttk.Label(parent, text=label).grid(row=row, column=col * 2, sticky="w", padx=5, pady=3)
@@ -268,6 +294,7 @@ class PiDashboard(tk.Tk):
         if directory:
             self.run_path_var.set(directory)
             self.status_var.set("Carpeta de análisis seleccionada.")
+            self._highlight_selected_directory(directory)
 
     def run_analysis(self):
         run_path = self.run_path_var.get().strip()
@@ -275,6 +302,46 @@ class PiDashboard(tk.Tk):
         self.status_var.set("Ejecutando analyze_run...")
         self.progress.start(8)
         self.runner.start(cmd)
+
+    # --- Run list helpers ---
+    def _refresh_runs_list(self):
+        base = Path(DEFAULT_RUNS_BASE)
+        for item in self.run_tree.get_children():
+            self.run_tree.delete(item)
+        if not base.exists():
+            self.status_var.set(f"No existe {base}")
+            return
+        dirs = [d for d in base.iterdir() if d.is_dir()]
+        if not dirs:
+            self.status_var.set("No hay grabaciones registradas.")
+            return
+        dirs.sort(key=lambda p: p.name, reverse=True)
+        for d in dirs[:50]:
+            mtime = datetime.fromtimestamp(d.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            self.run_tree.insert("", tk.END, values=(d.name, mtime, str(d)))
+        self.status_var.set("Lista de runs actualizada.")
+
+    def _select_run_from_list(self, event):
+        sel = self.run_tree.selection()
+        if not sel:
+            return
+        values = self.run_tree.item(sel[0], "values")
+        if len(values) >= 3:
+            self.run_path_var.set(values[2])
+            self.status_var.set(f"Seleccionado: {values[2]}")
+
+    def _apply_run_from_event(self, event):
+        self._select_run_from_list(event)
+        # Confirm selection
+        messagebox.showinfo("Carpeta aplicada", f"Run seleccionado:\n{self.run_path_var.get()}")
+
+    def _highlight_selected_directory(self, directory: str):
+        for item in self.run_tree.get_children():
+            values = self.run_tree.item(item, "values")
+            if len(values) >= 3 and values[2] == directory:
+                self.run_tree.selection_set(item)
+                self.run_tree.see(item)
+                break
 
 
 def main():
