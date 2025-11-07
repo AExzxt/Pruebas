@@ -3,6 +3,7 @@ import csv
 import json
 from collections import Counter
 from pathlib import Path
+from typing import Any, Dict, List
 
 
 def find_latest_run(base: Path) -> Path:
@@ -79,6 +80,7 @@ def main():
     rough_cnt = Counter()
     potholes_total = 0
     frames_with_pothole = 0
+    frames_info: List[Dict[str, Any]] = []
 
     for rec in load_jsonl(jsonl_path):
         n_frames += 1
@@ -95,8 +97,44 @@ def main():
         potholes = rec.get("potholes", []) or []
         k = len(potholes)
         potholes_total += k
+        frame_idx = rec.get("frame", n_frames)
+        frames_info.append({
+            "frame": frame_idx,
+            "ts": ts,
+            "terrain": label,
+            "rough_id": rid,
+            "potholes": k,
+        })
         if k > 0:
             frames_with_pothole += 1
+
+    prev_ts = None
+    fps_values = []
+    for info in frames_info:
+        ts = info.get("ts")
+        if prev_ts is not None and isinstance(ts, (int, float)) and ts > prev_ts:
+            fps = 1.0 / (ts - prev_ts)
+        else:
+            fps = fps_values[-1] if fps_values else 0.0
+        info["fps"] = fps
+        fps_values.append(fps)
+        if isinstance(ts, (int, float)):
+            prev_ts = ts
+
+    frame_table = []
+    for info in frames_info:
+        frame_table.append({
+            "frame": info["frame"],
+            "timestamp": info.get("ts", 0.0),
+            "fps_est": round(info.get("fps", 0.0), 3),
+            "terrain": info["terrain"],
+            "rough_id": info["rough_id"],
+            "potholes": info["potholes"],
+        })
+    frame_csv = run_dir / "frame_analysis.csv"
+    frame_json = run_dir / "frame_analysis.json"
+    write_table_csv(frame_csv, frame_table)
+    write_table_json(frame_json, frame_table)
 
     dt = (ts_max - ts_min) if (ts_min is not None and ts_max is not None) else 0.0
     minutes = dt / 60.0 if dt > 0 else 0.0
@@ -161,6 +199,8 @@ def main():
     if not args.no_plots:
         try:
             import matplotlib.pyplot as plt
+            from matplotlib.lines import Line2D
+            import matplotlib.patches as mpatches
 
             def make_bar(counter: Counter, title: str, filename: str):
                 if not counter:
@@ -206,6 +246,58 @@ def main():
                     plt.tight_layout()
                     plt.savefig(run_dir / 'potholes_cumulative.png', dpi=180)
                     plt.close()
+
+            if frames_info:
+                terrain_palette = {
+                    'liso': '#4CAF50',
+                    'grava': '#A0522D',
+                    'tierra': '#D2691E',
+                    'obstaculo': '#E53935',
+                }
+                default_color = '#607D8B'
+                fig, ax = plt.subplots(figsize=(8, 4))
+                for has_bache in (False, True):
+                    xs = []
+                    ys = []
+                    cols = []
+                    for info in frames_info:
+                        flag = info['potholes'] > 0
+                        if flag != has_bache:
+                            continue
+                        xs.append(info['frame'])
+                        ys.append(info.get('fps', 0.0))
+                        cols.append(terrain_palette.get(info['terrain'], default_color))
+                    if xs:
+                        marker = 'o' if not has_bache else 'X'
+                        label = 'Sin bache' if not has_bache else 'Bache detectado'
+                        ax.scatter(xs, ys, c=cols, marker=marker, edgecolor='black', linewidths=0.4,
+                                   s=50, alpha=0.85, label=label)
+                ax.set_title('Visión general: FPS estimado vs clase de terreno')
+                ax.set_xlabel('Frame')
+                ax.set_ylabel('FPS estimado')
+                ax.grid(True, alpha=0.3)
+                terrain_handles = [mpatches.Patch(color=terrain_palette.get(name, default_color),
+                                                  label=f"Terreno: {name}") for name in terrain_palette]
+                marker_handles = [
+                    Line2D([0], [0], marker='o', color='w', label='Sin bache', markerfacecolor='white',
+                           markeredgecolor='black'),
+                    Line2D([0], [0], marker='X', color='w', label='Bache detectado', markerfacecolor='black',
+                           markeredgecolor='black')
+                ]
+                ax.legend(handles=terrain_handles + marker_handles, loc='upper right', fontsize=8)
+                plt.tight_layout()
+                overview_path = run_dir / 'frame_overview.png'
+                plt.savefig(overview_path, dpi=180)
+                plt.close()
+
+                legend_path = run_dir / 'frame_overview_legend.txt'
+                with open(legend_path, 'w', encoding='utf-8') as f:
+                    f.write('Leyenda - frame_overview.png\\n')
+                    f.write('- Colores: clase de terreno detectada (liso, grava, tierra, obstaculo).\\n')
+                    f.write('- Marcador \"o\": frame sin bache detectado.\\n')
+                    f.write('- Marcador \"X\": frame con bache detectado.\\n')
+                    f.write('- Eje X: índice de frame (secuencia capturada).\\n')
+                    f.write('- Eje Y: FPS estimado (1 / Δt entre frames consecutivos).\\n')
 
             print("Gráficos generados en:", run_dir)
         except ImportError:
