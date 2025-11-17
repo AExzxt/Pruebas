@@ -91,7 +91,7 @@ class PiDashboard(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Pi Runtime Dashboard")
-        self.geometry("1000x720")
+        self.geometry("1020x760")
         self.runner = CommandRunner(self._append_output, self._on_command_finish)
         self._build_ui()
 
@@ -99,8 +99,28 @@ class PiDashboard(tk.Tk):
         style = ttk.Style(self)
         style.configure("Blue.Horizontal.TProgressbar", troughcolor="#f0f0f0", background="#4A90E2")
 
-        main_frame = ttk.Frame(self, padding=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        container = ttk.Frame(self)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        main_frame = ttk.Frame(canvas, padding=10)
+        canvas.create_window((0, 0), window=main_frame, anchor="nw")
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        def _configure_canvas(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        main_frame.bind("<Configure>", _configure_canvas)
 
         # Environment frame
         env_frame = ttk.Labelframe(main_frame, text="1. Entorno virtual", padding=10)
