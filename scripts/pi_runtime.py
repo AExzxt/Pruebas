@@ -7,16 +7,8 @@ import shutil
 import csv
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
 
-try:
-    import cv2  # type: ignore
-except Exception as e:
-    raise RuntimeError(
-        "El módulo 'cv2' (OpenCV) no está disponible; instálalo con: pip install opencv-python "
-        "o, para entornos sin GUI, pip install opencv-python-headless"
-    ) from e
-import threading
+import cv2
 import numpy as np
 import torch
 import torch.nn as nn
