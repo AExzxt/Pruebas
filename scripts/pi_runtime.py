@@ -4,14 +4,27 @@ import os
 import sys
 import time
 import shutil
+import csv
 from datetime import datetime
 from pathlib import Path
+from typing import Optional, TYPE_CHECKING
 
-import cv2
+try:
+    import cv2  # type: ignore
+except Exception as e:
+    raise RuntimeError(
+        "El módulo 'cv2' (OpenCV) no está disponible; instálalo con: pip install opencv-python "
+        "o, para entornos sin GUI, pip install opencv-python-headless"
+    ) from e
+import threading
 import numpy as np
 import torch
 import torch.nn as nn
 from torchvision import transforms, models
+
+if TYPE_CHECKING:  # Pylance: no requiere que los módulos estén instalados en tiempo real
+    import cv2 as _cv2  # pragma: no cover
+    from ultralytics import YOLO  # pragma: no cover
 
 
 # -----------------------------
@@ -118,7 +131,7 @@ def classify_terrain(frame: np.ndarray, model: nn.Module, device: str, img_size:
 
 def load_yolo(weights_path: str):
     try:
-        from ultralytics import YOLO
+        from ultralytics import YOLO  # type: ignore
     except Exception as e:
         raise RuntimeError(
             "No se pudo importar ultralytics. Instala con: pip install ultralytics"
@@ -240,6 +253,15 @@ def main():
     ap.add_argument("--record", action="store_true")
     # salida
     ap.add_argument("--out", default=str(Path("cnn-terreno/pi_runs")))
+    # IMU / MPU-6050 options (opcional)
+    ap.add_argument("--imu", action="store_true", help="Activar lectura IMU (MPU-6050) y adjuntarla por frame")
+    ap.add_argument("--imu-bus", type=int, default=1, help="Bus I2C para IMU (default: 1)")
+    ap.add_argument("--imu-addr", type=lambda x: int(x,0), default=0x68, help="Dirección I2C IMU (default: 0x68)")
+    ap.add_argument("--imu-rate", type=int, default=100, help="Frecuencia IMU Hz (default: 100)")
+    ap.add_argument("--imu-accel", choices=['±2g','±4g','±8g','±16g'], default='±4g')
+    ap.add_argument("--imu-gyro", choices=['±250dps','±500dps','±1000dps','±2000dps'], default='±500dps')
+    ap.add_argument("--imu-dlpf", type=int, default=42, help="DLPF Hz para IMU (default: 42)")
+    ap.add_argument("--imu-alpha", type=float, default=0.02, help="Alpha filtro complementario IMU")
     args = ap.parse_args()
 
     device = "cuda" if (args.device == "cuda" and torch.cuda.is_available()) else "cpu"
@@ -249,6 +271,43 @@ def main():
     jsonl_path = run_dir / "results.jsonl"
     csv_path = run_dir / "results.csv"
     header_written = set()
+
+    # Si IMU está activado, escribimos header CSV con columnas estándar
+    if args.imu:
+        imu_headers = ['ts','frame','terrain_label','terrain_conf','rough_id','rough_conf','potholes_n',
+                       'imu_t_unix','imu_t_mono_ns','ax','ay','az','gx','gy','gz','amag','pitch','roll']
+        if not csv_path.exists():
+            with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(imu_headers)
+            # Mark header as written
+            header_written.add(csv_path)
+
+    # IMU integration (optional)
+    imu_obj: Optional[object] = None
+    last_imu_sample: Optional[dict] = None
+    last_imu_lock = threading.Lock()
+    if args.imu:
+        try:
+            from imu.mpu6050 import MPU6050
+
+            imu_obj = MPU6050(bus=args.imu_bus, addr=args.imu_addr,
+                              accel_range=args.imu_accel, gyro_range=args.imu_gyro,
+                              dlpf=args.imu_dlpf)
+            imu_obj.ahrs.alpha = args.imu_alpha
+            imu_obj.load_calibration()
+
+            def _on_imu(s: dict):
+                nonlocal last_imu_sample
+                with last_imu_lock:
+                    last_imu_sample = s
+
+            imu_obj.subscribe(_on_imu)
+            imu_obj.start(rate_hz=args.imu_rate)
+            print("[info] IMU started")
+        except Exception as e:
+            print(f"[warn] No se pudo iniciar IMU: {e}")
+            imu_obj = None
 
     # Cargar modelos
     print("[info] Cargando modelo multitarea...")
@@ -272,6 +331,10 @@ def main():
             "height": args.height,
             "fps": args.fps,
             "conf": args.conf,
+            "imu_enabled": bool(args.imu),
+            "imu_bus": args.imu_bus if args.imu else None,
+            "imu_addr": hex(args.imu_addr) if args.imu else None,
+            "imu_rate": args.imu_rate if args.imu else None,
         }, f, indent=2, ensure_ascii=False)
 
     cap = open_capture(args.src, args.width, args.height, args.fps, gst_pipeline=args.gst)
@@ -313,6 +376,8 @@ def main():
                         "proba": terr["rough_proba"],
                     },
                     "potholes": dets,
+                    # IMU sample snapshot (puede ser None)
+                    "imu": (last_imu_sample if last_imu_sample is not None else None),
                 }
                 append_jsonl(jsonl_path, rec)
                 # CSV flat
@@ -325,6 +390,23 @@ def main():
                     "rough_conf": rec["roughness"]["conf"],
                     "potholes_n": len(dets),
                 }
+                # Si hay IMU, añadimos columnas estándar
+                with last_imu_lock:
+                    imu_snap = last_imu_sample
+                if imu_snap is not None:
+                    flat.update({
+                        "imu_t_unix": imu_snap.get("t_unix"),
+                        "imu_t_mono_ns": imu_snap.get("t_mono_ns"),
+                        "ax": imu_snap.get("ax"),
+                        "ay": imu_snap.get("ay"),
+                        "az": imu_snap.get("az"),
+                        "gx": imu_snap.get("gx"),
+                        "gy": imu_snap.get("gy"),
+                        "gz": imu_snap.get("gz"),
+                        "amag": imu_snap.get("amag"),
+                        "pitch": imu_snap.get("pitch"),
+                        "roll": imu_snap.get("roll"),
+                    })
                 append_csv(csv_path, flat, header_written)
 
             # overlay
@@ -345,6 +427,12 @@ def main():
         cap.release()
         if writer is not None:
             writer.release()
+        if imu_obj is not None:
+            try:
+                imu_obj.stop()
+                print("[info] IMU stopped")
+            except Exception:
+                pass
         if args.show:
             cv2.destroyAllWindows()
 
