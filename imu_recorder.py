@@ -47,11 +47,17 @@ def main():
     csv_file = None
     csv_writer = None
     if args.csv:
-        csv_file = open(args.csv, 'w', newline='')
+        csv_path = Path(args.csv).expanduser()
+        try:
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
+        except PermissionError as e:
+            logger.error("No tengo permisos para crear la carpeta %s. Usa una ruta dentro de tu home (p.ej. ~/logs/imu.csv) o ejecuta con permisos adecuados.", csv_path.parent)
+            raise SystemExit(1) from e
+        csv_file = csv_path.open('w', newline='')
         csv_writer = csv.writer(csv_file)
         header = ['t_unix','t_mono_ns','ax','ay','az','gx','gy','gz','amag','pitch','roll']
         csv_writer.writerow(header)
-        logger.info(f"Escribiendo CSV en {args.csv}")
+        logger.info(f"Escribiendo CSV en {csv_path}")
 
     mqtt_client = None
     if args.mqtt:
