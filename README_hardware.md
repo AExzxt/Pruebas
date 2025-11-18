@@ -27,15 +27,13 @@ pip install smbus2 numpy Pillow opencv-python
 ## Uso
 1. Conectar:
    - MPU6050 → I2C (0x68).
-   - HMC5883L → I2C (0x1E).
    - PCA9685 → I2C (0x40 por defecto).
    - Servos MG996R en canal 0 (dirección) y canal 1 (amortiguador).
-2. (Opcional) Calibrar magnetómetro:
-   - En `main.py`, descomenta `mag.calibrate_hard_iron(15)`, ejecuta moviendo el sensor en forma de 8, luego vuelve a comentar si no quieres recalibrar cada arranque.
-3. Ejecutar GUI:
+2. Ejecutar GUI:
 ```bash
 python3 main.py
 ```
+*(Si más adelante agregas un magnetómetro compatible, ajusta `main.py` y la GUI lo mostrarán.)*
 
 ## Qué hace
 - Inicializa I²C, MPU6050 (100 Hz), HMC5883L (heading), PCA9685 a 50 Hz.

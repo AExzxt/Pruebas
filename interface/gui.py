@@ -26,7 +26,7 @@ class App(tk.Tk):
     def __init__(
         self,
         imu: MPU6050,
-        mag: HMC5883L,
+        mag: HMC5883L | None,
         pca: PCA9685,
         cam_index: int = 0,
         use_camera: bool = True,
@@ -85,8 +85,9 @@ class App(tk.Tk):
     def _start_threads(self) -> None:
         self.imu.subscribe(self._on_imu)
         self.imu.start()
-        self._sensor_thread = threading.Thread(target=self._mag_loop, daemon=True)
-        self._sensor_thread.start()
+        if self.mag is not None:
+            self._sensor_thread = threading.Thread(target=self._mag_loop, daemon=True)
+            self._sensor_thread.start()
         if self.use_camera:
             self._cam_thread = threading.Thread(target=self._cam_loop, daemon=True)
             self._cam_thread.start()
@@ -139,7 +140,7 @@ class App(tk.Tk):
 
     def _refresh_gui(self) -> None:
         imu = getattr(self, "_last_imu", None)
-        heading = getattr(self, "_last_heading", None)
+        heading = getattr(self, "_last_heading", None) if self.mag is not None else None
         if imu:
             self.lbl_accel.config(text=f"Accel: {imu['ax']:.2f}, {imu['ay']:.2f}, {imu['az']:.2f} m/s²")
             self.lbl_gyro.config(text=f"Gyro: {imu['gx']:.2f}, {imu['gy']:.2f}, {imu['gz']:.2f} °/s")
