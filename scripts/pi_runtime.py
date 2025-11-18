@@ -8,19 +8,15 @@ import csv
 from datetime import datetime
 from pathlib import Path
 
-try:
-    import cv2
-except Exception as e:
-    raise RuntimeError(
-        "El módulo 'cv2' (OpenCV) no está disponible; instálalo con: pip install opencv-python "
-        "o, para entornos sin GUI, pip install opencv-python-headless"
-    ) from e
-import threading
-from typing import Optional
+import cv2
 import numpy as np
 import torch
 import torch.nn as nn
 from torchvision import transforms, models
+
+if TYPE_CHECKING:  # Pylance: no requiere que los módulos estén instalados en tiempo real
+    import cv2 as _cv2  # pragma: no cover
+    from ultralytics import YOLO  # pragma: no cover
 
 
 # -----------------------------
@@ -127,7 +123,7 @@ def classify_terrain(frame: np.ndarray, model: nn.Module, device: str, img_size:
 
 def load_yolo(weights_path: str):
     try:
-        from ultralytics import YOLO
+        from ultralytics import YOLO  # type: ignore
     except Exception as e:
         raise RuntimeError(
             "No se pudo importar ultralytics. Instala con: pip install ultralytics"
