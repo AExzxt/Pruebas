@@ -7,6 +7,7 @@ import time
 import tkinter as tk
 from tkinter import ttk
 from typing import Callable, Optional
+import random
 
 import numpy as np
 
@@ -43,10 +44,35 @@ class App(tk.Tk):
         self._camera_paused = False
         self._cam_thread: threading.Thread | None = None
         self.frame_queue: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=2)
+        self.mode_var = tk.StringVar(value="manual")
+        self._manual_widgets: list[tk.Widget] = []
+        self._pending_auto_command: tuple[float, float] | None = None
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self._create_widgets()
         self._start_threads()
+
+    def _set_widget_state(self, widget: tk.Widget, enabled: bool) -> None:
+        try:
+            if enabled:
+                widget.state(["!disabled"])
+            else:
+                widget.state(["disabled"])
+        except tk.TclError:
+            widget.configure(state="normal" if enabled else "disabled")
+
+    def _set_controls_state(self, enabled: bool) -> None:
+        for widget in self._manual_widgets:
+            self._set_widget_state(widget, enabled)
+
+    def _on_mode_changed(self) -> None:
+        manual = self.mode_var.get() == "manual"
+        self._set_controls_state(manual)
+        if manual:
+            self.auto_status.config(text="Modo actual: Manual")
+        else:
+            self.auto_status.config(text="Modo actual: Automático (esperando modelo)")
+            self._apply_pending_auto_command()
 
     def _create_widgets(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -62,9 +88,21 @@ class App(tk.Tk):
         self.lbl_pitch.grid(row=2, column=0, sticky="w")
         self.lbl_heading.grid(row=3, column=0, sticky="w")
 
+        # Modo de control
+        mode_frame = ttk.LabelFrame(self, text="Modo de control")
+        mode_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
+        ttk.Radiobutton(
+            mode_frame, text="Manual", variable=self.mode_var, value="manual", command=self._on_mode_changed
+        ).grid(row=0, column=0, padx=4, pady=2)
+        ttk.Radiobutton(
+            mode_frame, text="Automático (modelo)", variable=self.mode_var, value="auto", command=self._on_mode_changed
+        ).grid(row=0, column=1, padx=4, pady=2)
+        self.auto_status = ttk.Label(mode_frame, text="Modo actual: Manual")
+        self.auto_status.grid(row=1, column=0, columnspan=2, sticky="w", padx=4)
+
         # Actuadores
         afrm = ttk.LabelFrame(self, text="Actuadores (PCA9685)")
-        afrm.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+        afrm.grid(row=2, column=0, sticky="nsew", padx=5, pady=5)
         ttk.Label(afrm, text="Dirección (-35 a 35°)").grid(row=0, column=0, sticky="w")
         self.slider_dir = ttk.Scale(afrm, from_=-35, to=35, command=self._on_dir_changed)
         self.slider_dir.grid(row=0, column=1, sticky="ew")
@@ -76,12 +114,20 @@ class App(tk.Tk):
 
         quick = ttk.Frame(afrm)
         quick.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(5, 0))
-        ttk.Button(quick, text="Izquierda", command=lambda: self._apply_dir_preset(-35)).grid(row=0, column=0, padx=2)
-        ttk.Button(quick, text="Centro", command=lambda: self._apply_dir_preset(0)).grid(row=0, column=1, padx=2)
-        ttk.Button(quick, text="Derecha", command=lambda: self._apply_dir_preset(35)).grid(row=0, column=2, padx=2)
-        ttk.Button(quick, text="Suave", command=lambda: self._apply_susp_preset(10)).grid(row=1, column=0, padx=2, pady=2)
-        ttk.Button(quick, text="Medio", command=lambda: self._apply_susp_preset(50)).grid(row=1, column=1, padx=2, pady=2)
-        ttk.Button(quick, text="Duro", command=lambda: self._apply_susp_preset(90)).grid(row=1, column=2, padx=2, pady=2)
+        self.btn_left = ttk.Button(quick, text="Izquierda", command=lambda: self._apply_dir_preset(-35))
+        self.btn_center = ttk.Button(quick, text="Centro", command=lambda: self._apply_dir_preset(0))
+        self.btn_right = ttk.Button(quick, text="Derecha", command=lambda: self._apply_dir_preset(35))
+        self.btn_soft = ttk.Button(quick, text="Suave", command=lambda: self._apply_susp_preset(10))
+        self.btn_mid = ttk.Button(quick, text="Medio", command=lambda: self._apply_susp_preset(50))
+        self.btn_hard = ttk.Button(quick, text="Duro", command=lambda: self._apply_susp_preset(90))
+        self.btn_left.grid(row=0, column=0, padx=2)
+        self.btn_center.grid(row=0, column=1, padx=2)
+        self.btn_right.grid(row=0, column=2, padx=2)
+        self.btn_soft.grid(row=1, column=0, padx=2, pady=2)
+        self.btn_mid.grid(row=1, column=1, padx=2, pady=2)
+        self.btn_hard.grid(row=1, column=2, padx=2, pady=2)
+        self.btn_demo_auto = ttk.Button(quick, text="Demo auto", command=self._demo_auto_command)
+        self.btn_demo_auto.grid(row=2, column=0, columnspan=3, pady=4)
 
         self.lbl_act = ttk.Label(afrm, text="Último PWM: --")
         self.lbl_act.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
@@ -89,7 +135,7 @@ class App(tk.Tk):
         # Cámara + controles
         if self.use_camera:
             cam_frame = ttk.LabelFrame(self, text="Cámara")
-            cam_frame.grid(row=2, column=0, sticky="nsew", padx=5, pady=5)
+            cam_frame.grid(row=3, column=0, sticky="nsew", padx=5, pady=5)
             btn_row = ttk.Frame(cam_frame)
             btn_row.grid(row=0, column=0, sticky="w")
             ttk.Button(btn_row, text="Iniciar", command=self.start_camera).grid(row=0, column=0, padx=2, pady=2)
@@ -103,11 +149,22 @@ class App(tk.Tk):
 
         # Logs
         log_frame = ttk.LabelFrame(self, text="Registro de acciones")
-        log_frame.grid(row=3, column=0, sticky="nsew", padx=5, pady=5)
+        log_frame.grid(row=4, column=0, sticky="nsew", padx=5, pady=5)
         self.log_text = tk.Text(log_frame, height=5, state="disabled")
         self.log_text.grid(row=0, column=0, sticky="nsew")
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
+        self._manual_widgets = [
+            self.slider_dir,
+            self.slider_susp,
+            self.btn_left,
+            self.btn_center,
+            self.btn_right,
+            self.btn_soft,
+            self.btn_mid,
+            self.btn_hard,
+        ]
+        self._on_mode_changed()
 
     def _start_threads(self) -> None:
         self.imu.subscribe(self._on_imu)
@@ -134,26 +191,44 @@ class App(tk.Tk):
 
     # -------- actuadores
     def _on_dir_changed(self, val: str) -> None:
-        angle = float(val)
-        pulse = self.mapper.angle_to_us(angle, (-35, 35))
-        self.pca.set_servo_us(0, pulse)  # canal 0
-        self.lbl_act.config(text=f"Dir: {angle:.1f}° -> {pulse:.0f} us")
-        self._log_action(f"Dirección ajustada a {angle:.1f}° ({pulse:.0f} us)")
+        if self.mode_var.get() != "manual":
+            return
+        self._set_direction(float(val), source="Manual")
 
     def _on_susp_changed(self, val: str) -> None:
-        pct = float(val)
-        pulse = self.mapper.percent_to_us(pct)
-        self.pca.set_servo_us(1, pulse)  # canal 1
-        self.lbl_act.config(text=f"Susp: {pct:.0f}% -> {pulse:.0f} us")
-        self._log_action(f"Suspensión ajustada a {pct:.0f}% ({pulse:.0f} us)")
+        if self.mode_var.get() != "manual":
+            return
+        self._set_suspension(float(val), source="Manual")
 
     def _apply_dir_preset(self, angle: float) -> None:
         self.slider_dir.set(angle)
-        self._on_dir_changed(str(angle))
+        self._set_direction(angle, source="Manual")
 
     def _apply_susp_preset(self, pct: float) -> None:
         self.slider_susp.set(pct)
-        self._on_susp_changed(str(pct))
+        self._set_suspension(pct, source="Manual")
+
+    def _demo_auto_command(self) -> None:
+        steer = random.uniform(-35.0, 35.0)
+        susp = random.uniform(0.0, 100.0)
+        self.mode_var.set("auto")
+        self._on_mode_changed()
+        self.submit_auto_command(steer, susp)
+        self._log_action("Demo auto: enviando comandos generados aleatoriamente")
+
+    def _set_direction(self, angle: float, source: str = "Manual") -> None:
+        clamped = max(-35.0, min(35.0, angle))
+        pulse = self.mapper.angle_to_us(clamped, (-35, 35))
+        self.pca.set_servo_us(0, pulse)
+        self.lbl_act.config(text=f"Dir: {clamped:.1f}° -> {pulse:.0f} us")
+        self._log_action(f"[{source}] Dirección {clamped:.1f}° ({pulse:.0f} us)")
+
+    def _set_suspension(self, pct: float, source: str = "Manual") -> None:
+        clamped = max(0.0, min(100.0, pct))
+        pulse = self.mapper.percent_to_us(clamped)
+        self.pca.set_servo_us(1, pulse)
+        self.lbl_act.config(text=f"Susp: {clamped:.0f}% -> {pulse:.0f} us")
+        self._log_action(f"[{source}] Suspensión {clamped:.0f}% ({pulse:.0f} us)")
 
     # -------- cámara
     def start_camera(self, auto: bool = False) -> None:
@@ -242,6 +317,21 @@ class App(tk.Tk):
         self.log_text.insert("end", f"[{ts}] {msg}\n")
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+    def submit_auto_command(self, steer_deg: float, suspension_pct: float) -> None:
+        """Permite que otro módulo envíe comandos automáticos desde el modelo."""
+        self._pending_auto_command = (steer_deg, suspension_pct)
+        self.after(0, self._apply_pending_auto_command)
+
+    def _apply_pending_auto_command(self) -> None:
+        if not self._pending_auto_command:
+            return
+        angle, pct = self._pending_auto_command
+        if self.mode_var.get() != "auto":
+            return
+        self._set_direction(angle, source="Automático")
+        self._set_suspension(pct, source="Automático")
+        self.auto_status.config(text=f"Modo actual: Automático (Dir {angle:.1f}°, Susp {pct:.0f}%)")
 
     def _draw_frame(self, frame) -> None:
         assert cv2 is not None
