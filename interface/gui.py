@@ -33,6 +33,7 @@ class App(tk.Tk):
     ) -> None:
         super().__init__()
         self.title("IMU + Magnetómetro + PCA9685")
+        self.geometry("900x800")
         self.imu = imu
         self.mag = mag
         self.pca = pca
@@ -49,8 +50,27 @@ class App(tk.Tk):
         self._pending_auto_command: tuple[float, float] | None = None
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
+        self._build_scrollable_layout()
         self._create_widgets()
         self._start_threads()
+
+    def _build_scrollable_layout(self) -> None:
+        self.container = ttk.Frame(self)
+        self.container.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(self.container, highlightthickness=0)
+        self.vscroll = ttk.Scrollbar(self.container, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.vscroll.set)
+        self.vscroll.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.content = ttk.Frame(self.canvas)
+        self.canvas.create_window((0, 0), window=self.content, anchor="nw")
+        self.content.bind(
+            "<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+
+    def _on_mousewheel(self, event) -> None:
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _set_widget_state(self, widget: tk.Widget, enabled: bool) -> None:
         try:
@@ -150,8 +170,11 @@ class App(tk.Tk):
         # Logs
         log_frame = ttk.LabelFrame(self, text="Registro de acciones")
         log_frame.grid(row=4, column=0, sticky="nsew", padx=5, pady=5)
-        self.log_text = tk.Text(log_frame, height=5, state="disabled")
+        self.log_text = tk.Text(log_frame, height=5, state="disabled", wrap="word")
         self.log_text.grid(row=0, column=0, sticky="nsew")
+        log_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
+        log_scroll.grid(row=0, column=1, sticky="ns")
+        self.log_text.configure(yscrollcommand=log_scroll.set)
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
         self._manual_widgets = [
