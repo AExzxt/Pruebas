@@ -16,7 +16,6 @@ except Exception:
     cv2 = None  # type: ignore
 
 from sensors.mpu6050 import MPU6050
-from sensors.hmc5883l import HMC5883L
 from actuators.servo_controller import PCA9685, ServoMapper
 
 _log = logging.getLogger(__name__)
@@ -26,7 +25,7 @@ class App(tk.Tk):
     def __init__(
         self,
         imu: MPU6050,
-        mag: HMC5883L | None,
+        mag,
         pca: PCA9685,
         cam_index: int = 0,
         use_camera: bool = True,
@@ -40,6 +39,9 @@ class App(tk.Tk):
         self.use_camera = use_camera and cv2 is not None
         self.cam_index = cam_index
         self.cam = None
+        self._camera_running = False
+        self._camera_paused = False
+        self._cam_thread: threading.Thread | None = None
         self.frame_queue: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=2)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -72,15 +74,40 @@ class App(tk.Tk):
         self.slider_susp = ttk.Scale(afrm, from_=0, to=100, command=self._on_susp_changed)
         self.slider_susp.grid(row=1, column=1, sticky="ew")
 
-        self.lbl_act = ttk.Label(afrm, text="Último PWM: --")
-        self.lbl_act.grid(row=2, column=0, columnspan=2, sticky="w")
+        quick = ttk.Frame(afrm)
+        quick.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(5, 0))
+        ttk.Button(quick, text="Izquierda", command=lambda: self._apply_dir_preset(-35)).grid(row=0, column=0, padx=2)
+        ttk.Button(quick, text="Centro", command=lambda: self._apply_dir_preset(0)).grid(row=0, column=1, padx=2)
+        ttk.Button(quick, text="Derecha", command=lambda: self._apply_dir_preset(35)).grid(row=0, column=2, padx=2)
+        ttk.Button(quick, text="Suave", command=lambda: self._apply_susp_preset(10)).grid(row=1, column=0, padx=2, pady=2)
+        ttk.Button(quick, text="Medio", command=lambda: self._apply_susp_preset(50)).grid(row=1, column=1, padx=2, pady=2)
+        ttk.Button(quick, text="Duro", command=lambda: self._apply_susp_preset(90)).grid(row=1, column=2, padx=2, pady=2)
 
-        # Cámara
+        self.lbl_act = ttk.Label(afrm, text="Último PWM: --")
+        self.lbl_act.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        # Cámara + controles
         if self.use_camera:
-            self.canvas = tk.Label(self)
-            self.canvas.grid(row=2, column=0, padx=5, pady=5)
+            cam_frame = ttk.LabelFrame(self, text="Cámara")
+            cam_frame.grid(row=2, column=0, sticky="nsew", padx=5, pady=5)
+            btn_row = ttk.Frame(cam_frame)
+            btn_row.grid(row=0, column=0, sticky="w")
+            ttk.Button(btn_row, text="Iniciar", command=self.start_camera).grid(row=0, column=0, padx=2, pady=2)
+            ttk.Button(btn_row, text="Pausar", command=self.pause_camera).grid(row=0, column=1, padx=2, pady=2)
+            ttk.Button(btn_row, text="Reanudar", command=self.resume_camera).grid(row=0, column=2, padx=2, pady=2)
+            ttk.Button(btn_row, text="Detener", command=self.stop_camera).grid(row=0, column=3, padx=2, pady=2)
+            self.canvas = tk.Label(cam_frame)
+            self.canvas.grid(row=1, column=0, padx=5, pady=5)
         else:
             self.canvas = None
+
+        # Logs
+        log_frame = ttk.LabelFrame(self, text="Registro de acciones")
+        log_frame.grid(row=3, column=0, sticky="nsew", padx=5, pady=5)
+        self.log_text = tk.Text(log_frame, height=5, state="disabled")
+        self.log_text.grid(row=0, column=0, sticky="nsew")
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
 
     def _start_threads(self) -> None:
         self.imu.subscribe(self._on_imu)
@@ -88,10 +115,9 @@ class App(tk.Tk):
         if self.mag is not None:
             self._sensor_thread = threading.Thread(target=self._mag_loop, daemon=True)
             self._sensor_thread.start()
-        if self.use_camera:
-            self._cam_thread = threading.Thread(target=self._cam_loop, daemon=True)
-            self._cam_thread.start()
         self.after(200, self._refresh_gui)
+        if self.use_camera:
+            self.start_camera(auto=True)
 
     # -------- sensores
     def _on_imu(self, sample: dict) -> None:
@@ -112,22 +138,73 @@ class App(tk.Tk):
         pulse = self.mapper.angle_to_us(angle, (-35, 35))
         self.pca.set_servo_us(0, pulse)  # canal 0
         self.lbl_act.config(text=f"Dir: {angle:.1f}° -> {pulse:.0f} us")
+        self._log_action(f"Dirección ajustada a {angle:.1f}° ({pulse:.0f} us)")
 
     def _on_susp_changed(self, val: str) -> None:
         pct = float(val)
         pulse = self.mapper.percent_to_us(pct)
         self.pca.set_servo_us(1, pulse)  # canal 1
         self.lbl_act.config(text=f"Susp: {pct:.0f}% -> {pulse:.0f} us")
+        self._log_action(f"Suspensión ajustada a {pct:.0f}% ({pulse:.0f} us)")
+
+    def _apply_dir_preset(self, angle: float) -> None:
+        self.slider_dir.set(angle)
+        self._on_dir_changed(str(angle))
+
+    def _apply_susp_preset(self, pct: float) -> None:
+        self.slider_susp.set(pct)
+        self._on_susp_changed(str(pct))
 
     # -------- cámara
+    def start_camera(self, auto: bool = False) -> None:
+        if not self.use_camera:
+            return
+        if self._camera_running:
+            self._camera_paused = False
+            if not auto:
+                self._log_action("Cámara reanudada")
+            return
+        self._camera_running = True
+        self._camera_paused = False
+        self._cam_thread = threading.Thread(target=self._cam_loop, daemon=True)
+        self._cam_thread.start()
+        if not auto:
+            self._log_action("Cámara iniciada")
+
+    def pause_camera(self) -> None:
+        if self._camera_running:
+            self._camera_paused = True
+            self._log_action("Cámara en pausa")
+
+    def resume_camera(self) -> None:
+        if self._camera_running and self._camera_paused:
+            self._camera_paused = False
+            self._log_action("Cámara reanudada")
+
+    def stop_camera(self) -> None:
+        if self._camera_running:
+            self._camera_running = False
+            self._camera_paused = False
+            if self._cam_thread and self._cam_thread.is_alive():
+                self._cam_thread.join(timeout=1.0)
+            if self.cam:
+                self.cam.release()
+                self.cam = None
+            self._log_action("Cámara detenida")
+
     def _cam_loop(self) -> None:
         assert cv2 is not None
-        self.cam = cv2.VideoCapture(self.cam_index)
-        if not self.cam.isOpened():
+        cam = cv2.VideoCapture(self.cam_index)
+        if not cam.isOpened():
             _log.error("No se pudo abrir la cámara %s", self.cam_index)
+            self._camera_running = False
             return
-        while True:
-            ret, frame = self.cam.read()
+        self.cam = cam
+        while self._camera_running:
+            if self._camera_paused:
+                time.sleep(0.1)
+                continue
+            ret, frame = cam.read()
             if not ret:
                 continue
             if self.frame_queue.full():
@@ -137,6 +214,8 @@ class App(tk.Tk):
                     pass
             self.frame_queue.put(frame)
             time.sleep(0.01)
+        cam.release()
+        self.cam = None
 
     def _refresh_gui(self) -> None:
         imu = getattr(self, "_last_imu", None)
@@ -156,6 +235,13 @@ class App(tk.Tk):
                 pass
 
         self.after(100, self._refresh_gui)
+
+    def _log_action(self, msg: str) -> None:
+        ts = time.strftime("%H:%M:%S")
+        self.log_text.configure(state="normal")
+        self.log_text.insert("end", f"[{ts}] {msg}\n")
+        self.log_text.see("end")
+        self.log_text.configure(state="disabled")
 
     def _draw_frame(self, frame) -> None:
         assert cv2 is not None
@@ -178,9 +264,8 @@ class App(tk.Tk):
     def on_close(self) -> None:
         try:
             self.imu.stop()
-            if self.cam:
-                self.cam.release()
             if self.use_camera:
+                self.stop_camera()
                 import cv2 as _cv2  # type: ignore
                 _cv2.destroyAllWindows()
         finally:
